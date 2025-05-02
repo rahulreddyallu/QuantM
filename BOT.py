@@ -36,13 +36,16 @@ class Config:
     """Configuration settings for the trading bot"""
     
     # API Keys
-    UPSTOX_API_KEY = "YOUR_UPSTOX_API_KEY"
-    UPSTOX_API_SECRET = "YOUR_UPSTOX_API_SECRET"
-    UPSTOX_REDIRECT_URI = "YOUR_REDIRECT_URI"
-    UPSTOX_CODE = "YOUR_UPSTOX_CODE"
+    UPSTOX_API_KEY = "ad55de1b-c7d1-4adc-b559-3830bf1efd72"
+    UPSTOX_API_SECRET = "969nyjgapm"
+    UPSTOX_REDIRECT_URI = "https://localhost"
+    UPSTOX_CODE = "eyJ0eXAiOiJKV1QiLCJrZXlfaWQiOiJza192MS4wIiwiYWxnIjoiSFMyNTYifQ.eyJzdWIiOiI0TEFGUDkiLCJqdGkiOiI2ODEzOWU2N2NiOWRhMDZiZGU2MDFiNzAiLCJpc011bHRpQ2xpZW50IjpmYWxzZSwiaXNQbHVzUGxhbiI6ZmFsc2UsImlhdCI6MTc0NjExNjE5OSwiaXNzIjoidWRhcGktZ2F0ZXdheS1zZXJ2aWNlIiwiZXhwIjoxNzQ2MTM2ODAwfQ.LwX5Qi_mWBq8nNvCfSGm8tGM_Fv49gK78ej_fAzswYU"
     
-    TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-    TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID"
+    # Telegram notification settings
+    ENABLE_TELEGRAM_ALERTS = True
+    TELEGRAM_BOT_TOKEN = "7209852741:AAEf-_f6TeZK1-_R55yq365iU_54rk95y-c"
+    TELEGRAM_CHAT_ID = "936205208"
+    ENABLE_DAILY_REPORT = True
     
     # Analysis parameters
     SHORT_TERM_LOOKBACK = 120  # Days for short-term analysis
