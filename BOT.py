@@ -110,6 +110,23 @@ class Config:
         "atr": {
             "period": 14,
             "multiplier": 2
+        },
+        "alligator": {
+            "jaw_period": 13,
+            "teeth_period": 8,
+            "lips_period": 5
+        },
+        "cpr": {
+            "use_previous_day": True
+        },
+        "volume_ratios": {
+            "high_volume_threshold": 1.5,
+            "low_volume_threshold": 0.5
+        },
+        "reward_risk": {
+            "target_multiplier": 1.5,
+            "stop_multiplier": 1.0,
+            "min_rrr": 1.5
         }
     }
     
@@ -995,7 +1012,333 @@ class TechnicalIndicators:
         self.calculate_stochastic_rsi()
         self.calculate_fibonacci_retracement()
         
+        # Add the new indicators here
+        self.calculate_volume_ratio()
+        self.calculate_atr_bands()
+        self.calculate_alligator()
+        self.calculate_cpr()
+        self.calculate_reward_risk_ratio()
+        
         return self.indicators
+        
+    def calculate_volume_ratio(self):
+        """
+        Calculate volume relative to moving averages
+        
+        Returns:
+            Dictionary with volume ratio values
+        """
+        # Skip if Volume data is not available
+        if 'Volume' not in self.df.columns:
+            return {}
+            
+        # Define periods for volume moving averages
+        periods = [10, 20, 50]
+        high_volume_threshold = 1.5
+        low_volume_threshold = 0.5
+            
+        # Calculate volume moving averages
+        for period in periods:
+            self.df[f'volume_ma{period}'] = self.df['Volume'].rolling(window=period).mean()
+            
+        # Calculate volume ratio (current volume / average volume)
+        for period in periods:
+            # Vectorized calculation with handling for zero values
+            self.df[f'volume_ratio_{period}'] = np.where(
+                self.df[f'volume_ma{period}'] > 0,
+                self.df['Volume'] / self.df[f'volume_ma{period}'],
+                0
+            )
+            
+        # Flag high and low volume (based on 20-period MA)
+        self.df['high_volume'] = self.df['Volume'] > (self.df['volume_ma20'] * high_volume_threshold)
+        self.df['low_volume'] = self.df['Volume'] < (self.df['volume_ma20'] * low_volume_threshold)
+        
+        # Volume increasing or decreasing (5-day volume trend)
+        self.df['volume_ma5'] = self.df['Volume'].rolling(window=5).mean()
+        self.df['volume_increasing'] = self.df['volume_ma5'] > self.df['volume_ma5'].shift(3)
+        
+        # Price/volume confirmation
+        self.df['price_up_volume_up'] = (self.df['Close'] > self.df['Close'].shift(1)) & self.df['high_volume']
+        self.df['price_down_volume_up'] = (self.df['Close'] < self.df['Close'].shift(1)) & self.df['high_volume']
+        
+        # Save to results
+        self.indicators['volume_analysis'] = {
+            'signal': 1 if self.df['price_up_volume_up'].iloc[-1] else 
+                    -1 if self.df['price_down_volume_up'].iloc[-1] else 0,
+            'values': {
+                'volume_ratio_20': round(self.df['volume_ratio_20'].iloc[-1], 2) if not pd.isna(self.df['volume_ratio_20'].iloc[-1]) else None,
+                'high_volume': self.df['high_volume'].iloc[-1],
+                'volume_increasing': self.df['volume_increasing'].iloc[-1],
+                'price_volume_confirmed': self.df['price_up_volume_up'].iloc[-1] or self.df['price_down_volume_up'].iloc[-1]
+            }
+        }
+        
+        return {
+            'volume_ratio_20': self.df['volume_ratio_20'],
+            'high_volume': self.df['high_volume'],
+            'volume_increasing': self.df['volume_increasing']
+        }
+        
+    def calculate_reward_risk_ratio(self):
+        """
+        Calculate reward to risk ratio based on ATR for dynamic targets and stops
+        
+        Returns:
+            Dictionary with RRR values for long and short trades
+        """
+        # Get parameters
+        target_multiplier = 1.5  # Default target multiplier
+        stop_multiplier = 1.0    # Default stop multiplier
+        min_rrr = 1.5           # Default minimum RRR
+        
+        # Ensure ATR is calculated
+        if 'atr' not in self.df.columns:
+            self.calculate_atr()
+            
+        # Calculate potential stops and targets
+        self.df['long_entry'] = self.df['Close']
+        self.df['long_stop'] = self.df['Close'] - (self.df['atr'] * stop_multiplier)
+        self.df['long_target'] = self.df['Close'] + (self.df['atr'] * target_multiplier)
+        
+        self.df['short_entry'] = self.df['Close']
+        self.df['short_stop'] = self.df['Close'] + (self.df['atr'] * stop_multiplier)
+        self.df['short_target'] = self.df['Close'] - (self.df['atr'] * target_multiplier)
+        
+        # Calculate reward:risk ratios (handle division by zero)
+        long_risk = self.df['long_entry'] - self.df['long_stop']
+        short_risk = self.df['short_stop'] - self.df['short_entry']
+        
+        self.df['long_rrr'] = np.where(
+            long_risk > 0,
+            (self.df['long_target'] - self.df['long_entry']) / long_risk,
+            0
+        )
+        
+        self.df['short_rrr'] = np.where(
+            short_risk > 0,
+            (self.df['short_entry'] - self.df['short_target']) / short_risk,
+            0
+        )
+        
+        # Check if RRR meets minimum threshold
+        self.df['long_rrr_valid'] = self.df['long_rrr'] >= min_rrr
+        self.df['short_rrr_valid'] = self.df['short_rrr'] >= min_rrr
+        
+        # Save to results
+        self.indicators['reward_risk'] = {
+            'signal': 0,  # RRR doesn't generate direct signals
+            'values': {
+                'long_rrr': round(self.df['long_rrr'].iloc[-1], 2),
+                'short_rrr': round(self.df['short_rrr'].iloc[-1], 2),
+                'long_rrr_valid': self.df['long_rrr_valid'].iloc[-1],
+                'short_rrr_valid': self.df['short_rrr_valid'].iloc[-1],
+                'long_stop': round(self.df['long_stop'].iloc[-1], 2),
+                'long_target': round(self.df['long_target'].iloc[-1], 2),
+                'short_stop': round(self.df['short_stop'].iloc[-1], 2),
+                'short_target': round(self.df['short_target'].iloc[-1], 2)
+            }
+        }
+        
+        return {
+            'long_rrr': self.df['long_rrr'],
+            'short_rrr': self.df['short_rrr'],
+            'long_rrr_valid': self.df['long_rrr_valid'],
+            'short_rrr_valid': self.df['short_rrr_valid']
+        }
+        
+    def calculate_atr_bands(self):
+        """
+        Calculate ATR Bands using vectorized operations
+        
+        Returns:
+            Dictionary with upper and lower ATR bands
+        """
+        # Get parameters from config
+        period = self.params.get('atr', {}).get('period', 14)
+        multiplier = self.params.get('atr', {}).get('multiplier', 2)
+        
+        # Ensure ATR is calculated
+        if 'atr' not in self.df.columns:
+            self.calculate_atr()
+        
+        # Calculate moving average
+        self.df['atr_ma'] = self.df['Close'].rolling(window=period).mean()
+        
+        # Calculate ATR bands
+        self.df['atr_upper'] = self.df['atr_ma'] + (self.df['atr'] * multiplier)
+        self.df['atr_lower'] = self.df['atr_ma'] - (self.df['atr'] * multiplier)
+        
+        # Generate signals
+        self.df['atr_upper_break'] = self.df['Close'] > self.df['atr_upper']
+        self.df['atr_lower_break'] = self.df['Close'] < self.df['atr_lower']
+        
+        # ATR band penetration signals
+        self.df['atr_band_buy'] = (
+            (self.df['Close'] > self.df['atr_upper']) & 
+            (self.df['Close'].shift(1) <= self.df['atr_upper'].shift(1))
+        )
+        
+        self.df['atr_band_sell'] = (
+            (self.df['Close'] < self.df['atr_lower']) & 
+            (self.df['Close'].shift(1) >= self.df['atr_lower'].shift(1))
+        )
+        
+        # Save to results
+        self.indicators['atr_bands'] = {
+            'signal': 1 if self.df['atr_band_buy'].iloc[-1] else 
+                    -1 if self.df['atr_band_sell'].iloc[-1] else 0,
+            'values': {
+                'atr_upper': round(self.df['atr_upper'].iloc[-1], 2),
+                'atr_lower': round(self.df['atr_lower'].iloc[-1], 2),
+                'atr_ma': round(self.df['atr_ma'].iloc[-1], 2),
+                'upper_break': self.df['atr_upper_break'].iloc[-1],
+                'lower_break': self.df['atr_lower_break'].iloc[-1]
+            }
+        }
+        
+        return {
+            'atr_upper': self.df['atr_upper'],
+            'atr_lower': self.df['atr_lower']
+        }
+        
+    def calculate_alligator(self):
+        """
+        Calculate Alligator indicator using vectorized operations
+        
+        Returns:
+            Dictionary with jaw, teeth, and lips lines
+        """
+        # Default values for alligator periods
+        jaw = 13
+        teeth = 8
+        lips = 5
+        
+        # Calculate the median price
+        self.df['median_price'] = (self.df['High'] + self.df['Low']) / 2
+        
+        # Calculate the three lines
+        self.df['alligator_jaw'] = self.df['median_price'].rolling(window=jaw).mean().shift(8)
+        self.df['alligator_teeth'] = self.df['median_price'].rolling(window=teeth).mean().shift(5)
+        self.df['alligator_lips'] = self.df['median_price'].rolling(window=lips).mean().shift(3)
+        
+        # Determine if Alligator is sleeping (lines are intertwined)
+        max_line = self.df[['alligator_jaw', 'alligator_teeth', 'alligator_lips']].max(axis=1)
+        min_line = self.df[['alligator_jaw', 'alligator_teeth', 'alligator_lips']].min(axis=1)
+        
+        # If the difference between max and min is small, Alligator is sleeping
+        self.df['alligator_sleeping'] = (max_line - min_line) < (self.df['Close'] * 0.01)  # 1% of price
+        
+        # Determine buy/sell signal
+        self.df['alligator_buy'] = (
+            ~self.df['alligator_sleeping'] &
+            (self.df['Close'] > self.df['alligator_lips']) &
+            (self.df['alligator_lips'] > self.df['alligator_teeth']) &
+            (self.df['alligator_teeth'] > self.df['alligator_jaw'])
+        )
+        
+        self.df['alligator_sell'] = (
+            ~self.df['alligator_sleeping'] &
+            (self.df['Close'] < self.df['alligator_lips']) &
+            (self.df['alligator_lips'] < self.df['alligator_teeth']) &
+            (self.df['alligator_teeth'] < self.df['alligator_jaw'])
+        )
+        
+        # Define the feeding phase
+        self.df['alligator_feeding'] = (
+            ~self.df['alligator_sleeping'] &
+            (
+                (self.df['alligator_buy'] & (self.df['Close'] > self.df['Close'].shift(1))) |
+                (self.df['alligator_sell'] & (self.df['Close'] < self.df['Close'].shift(1)))
+            )
+        )
+        
+        # Save to results
+        self.indicators['alligator'] = {
+            'signal': 1 if self.df['alligator_buy'].iloc[-1] else 
+                    -1 if self.df['alligator_sell'].iloc[-1] else 0,
+            'values': {
+                'jaw': round(self.df['alligator_jaw'].iloc[-1], 2) if not pd.isna(self.df['alligator_jaw'].iloc[-1]) else None,
+                'teeth': round(self.df['alligator_teeth'].iloc[-1], 2) if not pd.isna(self.df['alligator_teeth'].iloc[-1]) else None,
+                'lips': round(self.df['alligator_lips'].iloc[-1], 2) if not pd.isna(self.df['alligator_lips'].iloc[-1]) else None,
+                'sleeping': self.df['alligator_sleeping'].iloc[-1],
+                'feeding': self.df['alligator_feeding'].iloc[-1]
+            }
+        }
+        
+        return {
+            'jaw': self.df['alligator_jaw'],
+            'teeth': self.df['alligator_teeth'],
+            'lips': self.df['alligator_lips']
+        }
+    
+    def calculate_cpr(self):
+        """
+        Calculate Central Pivot Range
+        
+        Returns:
+            Dictionary with pivot, TC, and BC values
+        """
+        # Calculate the previous day's data
+        self.df['prev_high'] = self.df['High'].shift(1)
+        self.df['prev_low'] = self.df['Low'].shift(1)
+        self.df['prev_close'] = self.df['Close'].shift(1)
+        
+        # Calculate pivot points
+        self.df['pivot'] = (self.df['prev_high'] + self.df['prev_low'] + self.df['prev_close']) / 3
+        self.df['bc'] = (self.df['prev_high'] + self.df['prev_low']) / 2
+        self.df['tc'] = (self.df['pivot'] - self.df['bc']) + self.df['pivot']
+        
+        # Calculate traditional support and resistance levels
+        self.df['r1'] = (2 * self.df['pivot']) - self.df['prev_low']
+        self.df['s1'] = (2 * self.df['pivot']) - self.df['prev_high']
+        self.df['r2'] = self.df['pivot'] + (self.df['prev_high'] - self.df['prev_low'])
+        self.df['s2'] = self.df['pivot'] - (self.df['prev_high'] - self.df['prev_low'])
+        
+        # Calculate CPR width (indication of volatility/range)
+        self.df['cpr_width'] = self.df['tc'] - self.df['bc']
+        
+        # Handle division by zero for percentage calculation
+        self.df['cpr_width_pct'] = np.where(
+            self.df['pivot'] > 0,
+            100 * self.df['cpr_width'] / self.df['pivot'],
+            0  # Default to 0 when pivot is zero
+        )
+        
+        # Price position relative to CPR
+        self.df['above_cpr'] = self.df['Close'] > self.df['tc']
+        self.df['below_cpr'] = self.df['Close'] < self.df['bc']
+        self.df['inside_cpr'] = (self.df['Close'] >= self.df['bc']) & (self.df['Close'] <= self.df['tc'])
+        
+        # CPR breakout signals
+        self.df['cpr_breakout_up'] = (
+            (self.df['Close'] > self.df['tc']) & 
+            (self.df['Close'].shift(1) <= self.df['tc'].shift(1))
+        )
+        
+        self.df['cpr_breakout_down'] = (
+            (self.df['Close'] < self.df['bc']) & 
+            (self.df['Close'].shift(1) >= self.df['bc'].shift(1))
+        )
+        
+        self.indicators['cpr'] = {
+            'signal': 1 if self.df['cpr_breakout_up'].iloc[-1] else 
+                    -1 if self.df['cpr_breakout_down'].iloc[-1] else 0,
+            'values': {
+                'pivot': round(self.df['pivot'].iloc[-1], 2),
+                'bc': round(self.df['bc'].iloc[-1], 2),
+                'tc': round(self.df['tc'].iloc[-1], 2),
+                'above_cpr': self.df['above_cpr'].iloc[-1],
+                'below_cpr': self.df['below_cpr'].iloc[-1],
+                'inside_cpr': self.df['inside_cpr'].iloc[-1]
+            }
+        }
+        
+        return {
+            'pivot': self.df['pivot'],
+            'bc': self.df['bc'],
+            'tc': self.df['tc']
+        }
     
     def calculate_moving_averages(self):
         """Calculate Simple and Exponential Moving Averages"""
@@ -2003,7 +2346,13 @@ class TechnicalIndicators:
                     'obv': 2,
                     'vwap': 3,
                     'stochastic_rsi': 3,
-                    'fibonacci': 2
+                    'fibonacci': 2,
+                    # New indicators with their signal strength
+                    'alligator': 3,
+                    'cpr': 3,
+                    'atr_bands': 2,
+                    'volume_analysis': 2,
+                    'reward_risk': 2
                 }
                 
                 # Get default strength or use 2 if not in map
@@ -2040,6 +2389,87 @@ class TechnicalIndicators:
                         signal_entry['description'] = "Price at/below lower Bollinger Band"
                     else:
                         signal_entry['description'] = "Price at/above upper Bollinger Band"
+                        
+                elif indicator_name == 'alligator':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Alligator in feeding phase (uptrend)"
+                    else:
+                        signal_entry['description'] = "Alligator in feeding phase (downtrend)"
+                        
+                elif indicator_name == 'cpr':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Breakout above CPR top"
+                    else:
+                        signal_entry['description'] = "Breakout below CPR bottom"
+                        
+                elif indicator_name == 'atr_bands':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Price broke above upper ATR band"
+                    else:
+                        signal_entry['description'] = "Price broke below lower ATR band"
+                        
+                elif indicator_name == 'volume_analysis':
+                    if signal_value > 0:
+                        signal_entry['description'] = "High volume on price increase (accumulation)"
+                    else:
+                        signal_entry['description'] = "High volume on price decrease (distribution)"
+                        
+                elif indicator_name == 'adx':
+                    values = indicator_data.get('values', {})
+                    trend_strength = values.get('trend_strength', 'Unknown')
+                    trend_direction = values.get('trend_direction', 'Unknown')
+                    signal_entry['description'] = f"ADX: {trend_strength} {trend_direction} trend"
+                    
+                elif indicator_name == 'aroon':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Aroon Up crossed above Aroon Down"
+                    else:
+                        signal_entry['description'] = "Aroon Down crossed above Aroon Up"
+                        
+                elif indicator_name == 'stochastic':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Stochastic %K crossed above %D in oversold region"
+                    else:
+                        signal_entry['description'] = "Stochastic %K crossed below %D in overbought region"
+                        
+                elif indicator_name == 'stochastic_rsi':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Stochastic RSI indicates oversold conditions"
+                    else:
+                        signal_entry['description'] = "Stochastic RSI indicates overbought conditions"
+                        
+                elif indicator_name == 'parabolic_sar':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Price crossed above Parabolic SAR"
+                    else:
+                        signal_entry['description'] = "Price crossed below Parabolic SAR"
+                        
+                elif indicator_name == 'vwap':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Price crossed above VWAP with volume confirmation"
+                    else:
+                        signal_entry['description'] = "Price crossed below VWAP with volume confirmation"
+                        
+                elif indicator_name == 'obv':
+                    if signal_value > 0:
+                        signal_entry['description'] = "OBV rising, indicating buying pressure"
+                    else:
+                        signal_entry['description'] = "OBV falling, indicating selling pressure"
+                        
+                elif indicator_name == 'fibonacci':
+                    if signal_value > 0:
+                        signal_entry['description'] = "Price bouncing from key Fibonacci support level"
+                    else:
+                        signal_entry['description'] = "Price rejecting from key Fibonacci resistance level"
+                        
+                elif indicator_name == 'reward_risk':
+                    values = indicator_data.get('values', {})
+                    if signal_value > 0:
+                        rrr = values.get('long_rrr', 0)
+                        signal_entry['description'] = f"Favorable reward/risk ratio for long position ({rrr}:1)"
+                    else:
+                        rrr = values.get('short_rrr', 0)
+                        signal_entry['description'] = f"Favorable reward/risk ratio for short position ({rrr}:1)"
                 
                 # Add signal to list
                 signals.append(signal_entry)
@@ -2080,14 +2510,25 @@ class TechnicalIndicators:
         support, resistance = self.get_support_resistance()
         
         # Calculate key levels and risk:reward ratio
-        current_price = self.df['close'].iloc[-1]
+        current_price = self.df['Close'].iloc[-1]
         atr_value = self.indicators.get('atr', {}).get('values', {}).get('atr', 0)
+        
+        # Check if we have RRR data
+        rrr_data = self.indicators.get('reward_risk', {}).get('values', {})
         
         # Default stop loss and target based on ATR (if available)
         stop_loss = None
         target = None
         
-        if atr_value and atr_value > 0:
+        # Use RRR-based stops and targets if available
+        if signal_type == 'BUY' and rrr_data.get('long_rrr_valid', False):
+            stop_loss = rrr_data.get('long_stop')
+            target = rrr_data.get('long_target')
+        elif signal_type == 'SELL' and rrr_data.get('short_rrr_valid', False):
+            stop_loss = rrr_data.get('short_stop')
+            target = rrr_data.get('short_target')
+        # Fall back to ATR method if RRR not available
+        elif atr_value and atr_value > 0:
             if signal_type == 'BUY':
                 stop_loss = current_price - (atr_value * 2)
                 target = current_price + (atr_value * 4)  # 2:1 risk:reward
@@ -2120,7 +2561,7 @@ class TechnicalIndicators:
             'individual_signals': signals,
             'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
-    
+        
     def get_support_resistance(self):
         """Get nearest support and resistance levels"""
         # Get last 100 periods of data
